@@ -47,6 +47,36 @@ Open the `Settings` sheet and adjust values as needed:
 4. Click “Compute Rankings” to calculate FantasyPoints, ranks, VOR, and VOLS.
 5. Or use “Run All” to do steps 3 and 4 together.
 
+### CLI (FF Data CLI)
+
+This repo includes a small Python CLI to pull public player data for cross-linking IDs.
+
+Install (requires Python 3.10+):
+
+```bash
+python3 -m pip install -e .
+```
+
+Usage examples:
+
+- Sleeper all players to file:
+
+```bash
+ff sleeper-players -o data/sleeper_players.json
+```
+
+- DynastyProcess player ID map (as JSON rows) to file:
+
+```bash
+ff dp-player-ids -o data/dp_playerids.json
+```
+
+- Print to stdout instead of file:
+
+```bash
+ff sleeper-players
+```
+
 ### Notes
 - Only include sources you are permitted to use. Do not scrape or bypass gated content.
 - For JSON APIs that require keys, you can store keys in Script Properties and construct URLs accordingly.
