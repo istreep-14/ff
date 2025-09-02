@@ -37,9 +37,15 @@ def dynastyprocess_player_ids(output: Optional[Path]):
     # Primary official location (nflverse):
     # https://github.com/dynastyprocess/data/tree/master/files
     # Raw CSV URL is versioned, but there is a stable file name
-    raw_url = "https://raw.githubusercontent.com/dynastyprocess/data/master/files/playerids.csv"
-    with urlopen(raw_url, timeout=60) as resp:
-        csv_text = resp.read().decode("utf-8")
+    primary_url = "https://raw.githubusercontent.com/dynastyprocess/data/master/files/db_playerids.csv"
+    fallback_url = "https://raw.githubusercontent.com/dynastyprocess/data/master/files/playerids.csv"
+    csv_text = ""
+    try:
+        with urlopen(primary_url, timeout=60) as resp:
+            csv_text = resp.read().decode("utf-8")
+    except Exception:
+        with urlopen(fallback_url, timeout=60) as resp:
+            csv_text = resp.read().decode("utf-8")
     reader = csv.DictReader(StringIO(csv_text))
     rows = [dict(r) for r in reader]
     write_output(rows, output)

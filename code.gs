@@ -181,9 +181,17 @@ function importSleeperPlayers() {
 function importDynastyProcessPlayerIds() {
   const ss = SpreadsheetApp.getActive();
   const sheet = getOrCreateSheet(ss, 'DP_PlayerIDs');
-  const csvUrl = 'https://raw.githubusercontent.com/dynastyprocess/data/master/files/playerids.csv';
+  // Primary moved path; keep old path as fallback
+  const primaryUrl = 'https://raw.githubusercontent.com/dynastyprocess/data/master/files/db_playerids.csv';
+  const fallbackUrl = 'https://raw.githubusercontent.com/dynastyprocess/data/master/files/playerids.csv';
   logInfo('Fetching DynastyProcess player IDs...');
-  const csvText = httpGetText_(csvUrl);
+  var csvText = '';
+  try {
+    csvText = httpGetText_(primaryUrl);
+  } catch (e) {
+    logInfo('Primary DP URL failed, trying fallback...');
+    csvText = httpGetText_(fallbackUrl);
+  }
   const rowsObj = parseCsvToObjects(csvText);
   // Determine headers from keys
   var headers = [];
