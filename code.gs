@@ -26,6 +26,7 @@ function onOpen() {
     .addSeparator()
     .addItem('Import Sleeper Players', 'importSleeperPlayers')
     .addItem('Import DynastyProcess IDs', 'importDynastyProcessPlayerIds')
+    .addItem('Import FantasyPros Projections (HTML)', 'importFantasyProsProjectionsHtml')
     .addSeparator()
     .addItem('Run All', 'runAll')
     .addToUi();
@@ -154,7 +155,7 @@ function importSleeperPlayers() {
       String(p.position || ''),
       String(p.team || ''),
       String(p.birth_date || ''),
-      String(p.height || ''),
+      String(parseHeightInches_(String(p.height || '')) || ''),
       String(p.weight || ''),
       p.age || '',
       String(p.status || ''),
@@ -211,6 +212,190 @@ function importDynastyProcessPlayerIds() {
     autoResizeColumns(sheet, headers.length);
   }
   logInfo('DynastyProcess IDs imported: ' + rows.length);
+}
+
+/**
+ * Import FantasyPros projections by scraping HTML tables for multiple positions.
+ * Positions covered: QB, RB, WR, TE, K, DST. Scoring: PPR, week=draft, include min/max.
+ * Output sheet: "FantasyPros_Projections" with Name, Pos, Team and stats.
+ */
+function importFantasyProsProjectionsHtml() {
+  const ss = SpreadsheetApp.getActive();
+  const sheet = getOrCreateSheet(ss, 'FantasyPros_Projections');
+  const base = 'https://www.fantasypros.com/nfl/projections/';
+  const query = '?max-yes=true&min-yes=true&scoring=PPR&week=draft';
+  const posToPath = {
+    'QB': 'qb.php',
+    'RB': 'rb.php',
+    'WR': 'wr.php',
+    'TE': 'te.php',
+    'K':  'k.php',
+    'DST': 'dst.php'
+  };
+
+  var allRows = [];
+  var allHeadersSet = {};
+
+  for (var pos in posToPath) {
+    var url = base + posToPath[pos] + query;
+    logInfo('Fetching FantasyPros ' + pos + ' projections...');
+    var html = httpGetText_(url);
+    var parsed = parseFantasyProsHtmlTable_(html, pos);
+    // Collect headers
+    for (var i = 0; i < parsed.rows.length; i++) {
+      var row = parsed.rows[i];
+      for (var key in row) {
+        allHeadersSet[key] = true;
+      }
+      allRows.push(row);
+    }
+  }
+
+  // Order headers: Name, Pos, Team first, then the rest alphabetically for consistency
+  var headers = ['Name','Pos','Team'];
+  for (var k in allHeadersSet) {
+    if (headers.indexOf(k) === -1) headers.push(k);
+  }
+  // Keep Name/Pos/Team at front, then sort the remainder (except them)
+  var fixed = ['Name','Pos','Team'];
+  var rest = headers.filter(function(h){ return fixed.indexOf(h) === -1; }).sort();
+  headers = fixed.concat(rest);
+
+  // Write to sheet
+  sheet.clear();
+  sheet.getRange(1,1,1,headers.length).setValues([headers]);
+  if (allRows.length > 0) {
+    var values = allRows.map(function(r){
+      return headers.map(function(h){ return r[h] !== undefined ? r[h] : ''; });
+    });
+    sheet.getRange(2,1,values.length,headers.length).setValues(values);
+    autoResizeColumns(sheet, headers.length);
+  }
+  logInfo('FantasyPros projections imported: ' + allRows.length);
+}
+
+/**
+ * Parse FantasyPros HTML table into a list of player objects.
+ * Ensures Name, Pos, Team fields exist using the first columns and/or player link text.
+ */
+function parseFantasyProsHtmlTable_(html, posForRows) {
+  var doc = XmlService.parse(htmlToXml_(html));
+  var root = doc.getRootElement();
+  var ns = root.getNamespace();
+  var tables = root.getDescendants().toArray().filter(function(d){
+    var e = d.getValue ? d.getValue() : null;
+    return e && e.getName && e.getName() === 'table';
+  }).map(function(d){ return d.getValue(); });
+  if (tables.length === 0) {
+    return { headers: [], rows: [] };
+  }
+  // Heuristic: pick the table with the most rows
+  var bestTable = tables.reduce(function(best, t){
+    var r = t.getChildren('tr');
+    return (!best || r.length > best.rCount) ? { table: t, rCount: r.length } : best;
+  }, null).table;
+
+  var rows = bestTable.getChildren('tr');
+  if (rows.length === 0) return { headers: [], rows: [] };
+
+  // Extract headers from thead or first row
+  var headerCells = [];
+  var theads = bestTable.getChildren('thead');
+  if (theads && theads.length > 0) {
+    var trh = theads[0].getChildren('tr');
+    if (trh && trh.length > 0) headerCells = trh[0].getChildren('th');
+  }
+  if (headerCells.length === 0) {
+    // fallback to first row's th/td
+    var firstTrTds = rows[0].getChildren('th');
+    if (firstTrTds.length === 0) firstTrTds = rows[0].getChildren('td');
+    headerCells = firstTrTds;
+    // Skip header row in data rows later
+    rows = rows.slice(1);
+  } else {
+    // Use all rows from tbody
+    var tb = bestTable.getChildren('tbody');
+    if (tb && tb.length > 0) {
+      rows = tb[0].getChildren('tr');
+    } else {
+      rows = bestTable.getChildren('tr').slice(1);
+    }
+  }
+
+  var headers = headerCells.map(function(th){ return getElementText_(th).trim(); });
+
+  var outRows = [];
+  for (var i = 0; i < rows.length; i++) {
+    var tds = rows[i].getChildren('td');
+    if (!tds || tds.length === 0) continue;
+    var obj = {};
+    for (var c = 0; c < Math.min(tds.length, headers.length); c++) {
+      var key = headers[c] && headers[c].trim() ? headers[c].trim() : ('Col' + c);
+      var val = getElementText_(tds[c]).trim();
+      obj[key] = val;
+    }
+    // Derive Name/Team/Pos
+    var name = obj['Player'] || obj['Name'] || '';
+    if (!name) {
+      // Try to grab anchor text within first cell
+      var firstCell = tds[0];
+      var anchors = firstCell.getChildren('a');
+      if (anchors && anchors.length > 0) {
+        name = getElementText_(anchors[0]).trim();
+      } else {
+        name = getElementText_(tds[0]).trim();
+      }
+    }
+    var team = obj['Team'] || '';
+    if (!team) {
+      // FantasyPros often formats as "Name Team"; try to extract trailing team token
+      var m = name.match(/^(.*)\s+([A-Z]{2,4})$/);
+      if (m) {
+        name = m[1];
+        team = m[2];
+      }
+    }
+    var pos = obj['POS'] || obj['Pos'] || posForRows || '';
+
+    obj['Name'] = name;
+    obj['Team'] = team;
+    obj['Pos'] = pos;
+
+    outRows.push(obj);
+  }
+  return { headers: headers, rows: outRows };
+}
+
+/**
+ * Convert raw HTML to minimal XML suitable for XmlService.parse.
+ */
+function htmlToXml_(html) {
+  // Ensure we have a single root and self-close common void elements to be XML-safe
+  var s = String(html || '');
+  // Remove DOCTYPE
+  s = s.replace(/<!DOCTYPE[^>]*>/ig, '');
+  // Self-close void tags
+  s = s.replace(/<(br|hr|img|input|meta|link)([^>]*)>/ig, '<$1$2 />');
+  // Wrap in a root element
+  return '<root>' + s + '</root>';
+}
+
+/**
+ * Recursively get text content for an XmlService element.
+ */
+function getElementText_(el) {
+  if (!el) return '';
+  var text = '';
+  var kids = el.getChildren();
+  if (!kids || kids.length === 0) {
+    return (el.getText && el.getText()) ? el.getText() : '';
+  }
+  for (var i = 0; i < kids.length; i++) {
+    var k = kids[i];
+    if (k.getText) text += k.getText();
+    text += getElementText_(k);
+  }
+  return text;
 }
 
 /**
@@ -876,4 +1061,41 @@ function jsonPath(obj, path) {
     cur = cur[parts[i]];
   }
   return cur;
+}
+
+/**
+ * Parses a height value into total inches.
+ * Accepts formats like "6'3\"", "6-3", "6 3", or numeric strings like "75".
+ * Returns a number (inches) or an empty string if unparsable.
+ */
+function parseHeightInches_(value) {
+  if (value === null || value === undefined) return '';
+  var s = String(value).trim();
+  if (s === '') return '';
+  // If already a plain integer like "73" or "75", return as number
+  if (/^\d+$/.test(s)) {
+    return Number(s);
+  }
+  // Normalize common separators and remove quotes
+  s = s.replace(/\"/g, '').replace(/\s+/g, ' ').trim();
+  // Match patterns like 6'3, 6'3", 6-3, 6 3
+  var m = s.match(/^(\d+)\s*['-]?\s*(\d+)?$/);
+  if (m) {
+    var feet = Number(m[1]);
+    var inches = m[2] ? Number(m[2]) : 0;
+    if (!isNaN(feet) && !isNaN(inches)) {
+      return feet * 12 + inches;
+    }
+  }
+  // Match patterns like 6 ft 3 in
+  m = s.toLowerCase().match(/^(\d+)\s*(ft|feet|foot)\s*(\d+)?\s*(in|inch|inches)?$/);
+  if (m) {
+    var f = Number(m[1]);
+    var i = m[3] ? Number(m[3]) : 0;
+    if (!isNaN(f) && !isNaN(i)) {
+      return f * 12 + i;
+    }
+  }
+  // Could not parse
+  return '';
 }
