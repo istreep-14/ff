@@ -96,6 +96,14 @@ function setupSheets() {
     ]]);
     autoResizeColumns(logsSheet, 3);
   }
+
+  // FantasyPros manual mapping sheet (for weird names / manual ID linking)
+  const fpMapSheet = getOrCreateSheet(ss, 'FantasyPros_ManualMap');
+  if (fpMapSheet.getLastRow() === 0) {
+    const headers = ['Name', 'Pos', 'Team', 'FantasyPros_Href', 'FantasyProsID', 'Notes'];
+    fpMapSheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    autoResizeColumns(fpMapSheet, headers.length);
+  }
 }
 
 /**
@@ -251,6 +259,26 @@ function importFantasyProsProjectionsHtml() {
     }
   }
 
+  // Apply manual mappings from FantasyPros_ManualMap
+  try {
+    var manualMap = buildFantasyProsManualMap_();
+    for (var ar = 0; ar < allRows.length; ar++) {
+      var r = allRows[ar];
+      var k = fantasyProsKey_(r['Name'], r['Pos'], r['Team']);
+      if (manualMap[k] && manualMap[k].FantasyProsID) {
+        r['FantasyProsID'] = manualMap[k].FantasyProsID;
+        if (manualMap[k].FantasyPros_Href && !r['FantasyPros_Href']) r['FantasyPros_Href'] = manualMap[k].FantasyPros_Href;
+      }
+    }
+    // Append unmapped rows to manual map for user to fill
+    appendUnknownFantasyProsToManualMap_(allRows, manualMap);
+    // Ensure headers include our mapping fields
+    allHeadersSet['FantasyProsID'] = true;
+    allHeadersSet['FantasyPros_Href'] = true;
+  } catch (e) {
+    logError('Manual map apply failed: ' + (e && e.message ? e.message : e));
+  }
+
   // Order headers: Name, Pos, Team first, then the rest alphabetically for consistency
   var headers = ['Name','Pos','Team'];
   for (var k in allHeadersSet) {
@@ -334,6 +362,25 @@ function parseFantasyProsHtmlTable_(html, posForRows) {
       var val = getElementText_(tds[c]).trim();
       obj[key] = val;
     }
+    // Attempt to capture FantasyPros player link href (first cell anchor)
+    try {
+      var firstCellForLink = tds[0];
+      var anchorsForLink = firstCellForLink.getChildren('a');
+      if (anchorsForLink && anchorsForLink.length > 0) {
+        var hrefAttr = anchorsForLink[0].getAttribute('href');
+        if (hrefAttr) {
+          var href = String(hrefAttr.getValue() || '').trim();
+          if (href) {
+            obj['FantasyPros_Href'] = href;
+            // Derive an ID if present in path .../players/<id>/ or query id=
+            var idMatch = href.match(/\/players\/.*?(\d+)/) || href.match(/[?&]id=(\d+)/);
+            if (idMatch && idMatch[1]) {
+              obj['FantasyProsID'] = idMatch[1];
+            }
+          }
+        }
+      }
+    } catch (e) {}
     // Derive Name/Team/Pos
     var name = obj['Player'] || obj['Name'] || '';
     if (!name) {
@@ -374,6 +421,9 @@ function htmlToXml_(html) {
   var s = String(html || '');
   // Remove DOCTYPE
   s = s.replace(/<!DOCTYPE[^>]*>/ig, '');
+  // Escape stray ampersands not part of entities to avoid XML parse errors
+  // Replace & that is not followed by a valid entity sequence
+  s = s.replace(/&(?![a-zA-Z]+;|#[0-9]+;|#x[0-9a-fA-F]+;)/g, '&amp;');
   // Self-close void tags
   s = s.replace(/<(br|hr|img|input|meta|link)([^>]*)>/ig, '<$1$2 />');
   // Wrap in a root element
@@ -1021,6 +1071,86 @@ function getHeaderSynonyms() {
     TwoPt: ['TwoPoint','TwoPointConv','2PT','two_pt'],
     ReturnTD: ['RetTD','ret_td']
   };
+}
+
+// ----------------------------
+// FantasyPros manual mapping helpers
+// ----------------------------
+
+function fantasyProsKey_(name, pos, team) {
+  var n = normalizeName(name);
+  var p = String(pos || '').trim().toUpperCase();
+  var t = (team && String(team).trim() !== '') ? String(team).toUpperCase() : 'NA';
+  return n + '|' + p + '|' + t;
+}
+
+function buildFantasyProsManualMap_() {
+  var ss = SpreadsheetApp.getActive();
+  var sheet = ss.getSheetByName('FantasyPros_ManualMap');
+  if (!sheet) return {};
+  var lastRow = sheet.getLastRow();
+  var lastCol = sheet.getLastColumn();
+  if (lastRow < 2 || lastCol < 1) return {};
+  var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  var idx = indexMap(headers);
+  var rows = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  var map = {};
+  for (var i = 0; i < rows.length; i++) {
+    var name = rows[i][idx['Name']];
+    if (!String(name || '').trim()) continue;
+    var pos = rows[i][idx['Pos']];
+    var team = rows[i][idx['Team']];
+    var href = idx['FantasyPros_Href'] !== undefined ? rows[i][idx['FantasyPros_Href']] : '';
+    var id = idx['FantasyProsID'] !== undefined ? rows[i][idx['FantasyProsID']] : '';
+    var key = fantasyProsKey_(name, pos, team);
+    map[key] = { FantasyProsID: String(id || '').trim(), FantasyPros_Href: String(href || '').trim() };
+  }
+  return map;
+}
+
+function appendUnknownFantasyProsToManualMap_(rows, manualMap) {
+  var ss = SpreadsheetApp.getActive();
+  var sheet = getOrCreateSheet(ss, 'FantasyPros_ManualMap');
+  var headers = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 6)).getValues()[0];
+  // Ensure columns
+  var expected = ['Name', 'Pos', 'Team', 'FantasyPros_Href', 'FantasyProsID', 'Notes'];
+  if (headers.join('|').indexOf('Name') === -1) {
+    sheet.clear();
+    sheet.getRange(1, 1, 1, expected.length).setValues([expected]);
+    headers = expected;
+  }
+  var idx = indexMap(headers);
+  // Collect unknowns
+  var existingKeys = {};
+  var lastRow = sheet.getLastRow();
+  if (lastRow >= 2) {
+    var existing = sheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
+    for (var i = 0; i < existing.length; i++) {
+      var k = fantasyProsKey_(existing[i][idx['Name']], existing[i][idx['Pos']], existing[i][idx['Team']]);
+      existingKeys[k] = true;
+    }
+  }
+  var toAppend = [];
+  for (var r = 0; r < rows.length; r++) {
+    var row = rows[r];
+    var key = fantasyProsKey_(row['Name'], row['Pos'], row['Team']);
+    var hasId = row['FantasyProsID'] && String(row['FantasyProsID']).trim() !== '';
+    if (!hasId && !existingKeys[key] && !manualMap[key]) {
+      toAppend.push([
+        row['Name'] || '',
+        row['Pos'] || '',
+        row['Team'] || '',
+        row['FantasyPros_Href'] || '',
+        '',
+        'Fill FantasyProsID manually'
+      ]);
+      existingKeys[key] = true;
+    }
+  }
+  if (toAppend.length > 0) {
+    sheet.getRange(sheet.getLastRow() + 1, 1, toAppend.length, 6).setValues(toAppend);
+    autoResizeColumns(sheet, 6);
+  }
 }
 
 function parseCsvToObjects(csvText) {
