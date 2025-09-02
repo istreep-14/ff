@@ -131,6 +131,28 @@ function refreshData() {
 }
 
 /**
+ * Normalizes height values which may be raw inches (e.g., 70, "71") or
+ * formatted feet-inches strings (e.g., "5'10"", "6'1""). Returns both the
+ * numeric inches value and a standardized feet-inches string.
+ */
+function normalizeHeight(value) {
+  if (value == null || value === '') return { inches: '', text: '' };
+  var str = String(value);
+  if (typeof value === 'number' || /^\d+$/.test(str)) {
+    var inches = Number(value);
+    var feet = Math.floor(inches / 12);
+    var rem = inches % 12;
+    return { inches: inches, text: feet + '\'' + rem + '"' };
+  }
+  var m = str.match(/^(\d+)'(\d+)"$/);
+  if (m) {
+    var inches2 = Number(m[1]) * 12 + Number(m[2]);
+    return { inches: inches2, text: m[1] + '\'' + m[2] + '"' };
+  }
+  return { inches: '', text: str };
+}
+
+/**
  * Import: Sleeper all NFL players into a sheet "Sleeper_Players".
  */
 function importSleeperPlayers() {
@@ -142,10 +164,11 @@ function importSleeperPlayers() {
   const obj = JSON.parse(jsonText);
   // Sleeper returns an object keyed by player_id → flatten to rows
   const rows = [];
-  const headers = ['player_id','full_name','first_name','last_name','position','team','birth_date','height','weight','age','status','years_exp','college','active'];
+  const headers = ['player_id','full_name','first_name','last_name','position','team','birth_date','height','height_in','height_ft_in','weight','age','status','years_exp','college','active'];
   for (var key in obj) {
     if (!obj.hasOwnProperty(key)) continue;
     var p = obj[key] || {};
+    var h = normalizeHeight(p.height);
     rows.push([
       String(p.player_id || key || ''),
       String(p.full_name || ''),
@@ -155,6 +178,8 @@ function importSleeperPlayers() {
       String(p.team || ''),
       String(p.birth_date || ''),
       String(p.height || ''),
+      (h && h.inches !== '' ? h.inches : ''),
+      (h && h.text ? h.text : ''),
       String(p.weight || ''),
       p.age || '',
       String(p.status || ''),
