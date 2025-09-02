@@ -154,7 +154,7 @@ function importSleeperPlayers() {
       String(p.position || ''),
       String(p.team || ''),
       String(p.birth_date || ''),
-      String(p.height || ''),
+      String(parseHeightInches_(String(p.height || '')) || ''),
       String(p.weight || ''),
       p.age || '',
       String(p.status || ''),
@@ -876,4 +876,41 @@ function jsonPath(obj, path) {
     cur = cur[parts[i]];
   }
   return cur;
+}
+
+/**
+ * Parses a height value into total inches.
+ * Accepts formats like "6'3\"", "6-3", "6 3", or numeric strings like "75".
+ * Returns a number (inches) or an empty string if unparsable.
+ */
+function parseHeightInches_(value) {
+  if (value === null || value === undefined) return '';
+  var s = String(value).trim();
+  if (s === '') return '';
+  // If already a plain integer like "73" or "75", return as number
+  if (/^\d+$/.test(s)) {
+    return Number(s);
+  }
+  // Normalize common separators and remove quotes
+  s = s.replace(/\"/g, '').replace(/\s+/g, ' ').trim();
+  // Match patterns like 6'3, 6'3", 6-3, 6 3
+  var m = s.match(/^(\d+)\s*['-]?\s*(\d+)?$/);
+  if (m) {
+    var feet = Number(m[1]);
+    var inches = m[2] ? Number(m[2]) : 0;
+    if (!isNaN(feet) && !isNaN(inches)) {
+      return feet * 12 + inches;
+    }
+  }
+  // Match patterns like 6 ft 3 in
+  m = s.toLowerCase().match(/^(\d+)\s*(ft|feet|foot)\s*(\d+)?\s*(in|inch|inches)?$/);
+  if (m) {
+    var f = Number(m[1]);
+    var i = m[3] ? Number(m[3]) : 0;
+    if (!isNaN(f) && !isNaN(i)) {
+      return f * 12 + i;
+    }
+  }
+  // Could not parse
+  return '';
 }
