@@ -24,6 +24,9 @@ function onOpen() {
     .addItem('Refresh Data (fetch + aggregate)', 'refreshData')
     .addItem('Compute Rankings (points + VOR/VOLS)', 'computeRankings')
     .addSeparator()
+    .addItem('Import Sleeper Players', 'importSleeperPlayers')
+    .addItem('Import DynastyProcess IDs', 'importDynastyProcessPlayerIds')
+    .addSeparator()
     .addItem('Run All', 'runAll')
     .addToUi();
 }
@@ -125,6 +128,81 @@ function refreshData() {
 
   const aggregated = aggregateDatasets(datasets);
   writePlayers(aggregated, /*includeComputedColumns*/ false);
+}
+
+/**
+ * Import: Sleeper all NFL players into a sheet "Sleeper_Players".
+ */
+function importSleeperPlayers() {
+  const ss = SpreadsheetApp.getActive();
+  const sheet = getOrCreateSheet(ss, 'Sleeper_Players');
+  const url = 'https://api.sleeper.app/v1/players/nfl';
+  logInfo('Fetching Sleeper players...');
+  const jsonText = httpGetText_(url);
+  const obj = JSON.parse(jsonText);
+  // Sleeper returns an object keyed by player_id → flatten to rows
+  const rows = [];
+  const headers = ['player_id','full_name','first_name','last_name','position','team','birth_date','height','weight','age','status','years_exp','college','active'];
+  for (var key in obj) {
+    if (!obj.hasOwnProperty(key)) continue;
+    var p = obj[key] || {};
+    rows.push([
+      String(p.player_id || key || ''),
+      String(p.full_name || ''),
+      String(p.first_name || ''),
+      String(p.last_name || ''),
+      String(p.position || ''),
+      String(p.team || ''),
+      String(p.birth_date || ''),
+      String(p.height || ''),
+      String(p.weight || ''),
+      p.age || '',
+      String(p.status || ''),
+      p.years_exp || '',
+      String(p.college || ''),
+      (p.active === true ? true : (p.active === false ? false : ''))
+    ]);
+  }
+  sheet.clear();
+  if (rows.length === 0) {
+    sheet.getRange(1,1,1,headers.length).setValues([headers]);
+  } else {
+    sheet.getRange(1,1,1,headers.length).setValues([headers]);
+    sheet.getRange(2,1,rows.length,headers.length).setValues(rows);
+    autoResizeColumns(sheet, headers.length);
+  }
+  logInfo('Sleeper players imported: ' + rows.length);
+}
+
+/**
+ * Import: DynastyProcess player ID map into sheet "DP_PlayerIDs".
+ * Source: https://github.com/dynastyprocess/data/tree/master/files
+ */
+function importDynastyProcessPlayerIds() {
+  const ss = SpreadsheetApp.getActive();
+  const sheet = getOrCreateSheet(ss, 'DP_PlayerIDs');
+  const csvUrl = 'https://raw.githubusercontent.com/dynastyprocess/data/master/files/playerids.csv';
+  logInfo('Fetching DynastyProcess player IDs...');
+  const csvText = httpGetText_(csvUrl);
+  const rowsObj = parseCsvToObjects(csvText);
+  // Determine headers from keys
+  var headers = [];
+  if (rowsObj.length > 0) {
+    headers = Object.keys(rowsObj[0]);
+  }
+  // Convert to 2D array
+  const rows = rowsObj.map(function(r){
+    return headers.map(function(h){ return r[h] || ''; });
+  });
+  sheet.clear();
+  if (headers.length > 0) {
+    sheet.getRange(1,1,1,headers.length).setValues([headers]);
+  }
+  if (rows.length > 0) {
+    sheet.getRange(2,1,rows.length,headers.length).setValues(rows);
+    autoResizeColumns(sheet, headers.length);
+  }
+  logInfo('DynastyProcess IDs imported: ' + rows.length);
 }
 
 /**
